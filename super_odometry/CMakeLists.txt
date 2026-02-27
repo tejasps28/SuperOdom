@@ -37,6 +37,7 @@ find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(image_transport REQUIRED)
 find_package(cv_bridge REQUIRED)
+find_package(OpenCV REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
@@ -92,6 +93,7 @@ add_library(SuperOdomLib SHARED
   src/LidarProcess/LidarSlam.cpp
   src/LidarProcess/pose_local_parameterization.cpp
   src/LidarProcess/SE3AbsolutatePoseFactor.cpp
+  src/VisualOdometry/visualOdometry.cpp
   src/parameter/parameter.cpp
   src/utils/superodom_utils.cpp
 )
@@ -165,6 +167,14 @@ add_executable(frame_normalizer_node src/frame_normalizer_node.cpp)
 ament_target_dependencies(frame_normalizer_node rclcpp nav_msgs sensor_msgs tf2_ros tf2_eigen)
 target_link_libraries(frame_normalizer_node Eigen3::Eigen ${PCL_LIBRARIES} ${OpenCV_LIBRARIES})
 
+# Visual odometry node
+add_executable(visual_odometry_node src/visualOdometry_node.cpp)
+ament_target_dependencies(visual_odometry_node rclcpp nav_msgs sensor_msgs cv_bridge)
+target_link_libraries(visual_odometry_node
+  ${OpenCV_LIBRARIES}
+  SuperOdomLib
+)
+
 # Install Exported Libraries
 ament_export_targets(export_super_odometry HAS_LIBRARY_TARGET)
 
@@ -191,6 +201,7 @@ install(TARGETS
   feature_extraction_node
   laser_mapping_node
   frame_normalizer_node
+  visual_odometry_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

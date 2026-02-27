@@ -11,6 +11,11 @@ Eigen::Map<Eigen::Quaterniond> q_w_curr(parameters+3);
 Eigen::Vector3d vel_b;
 Eigen::Vector3d ang_vel_b;
 
+namespace {
+constexpr double kOdomInterpolationSlackSec = 0.05;
+constexpr double kMaxSingleStepRotationDeg = 120.0;
+} // namespace
+
 namespace super_odometry {
 
     laserMapping::laserMapping(const rclcpp::NodeOptions & options)
@@ -55,6 +60,14 @@ namespace super_odometry {
             ProjectName+"/feature_info", 2,
             std::bind(&laserMapping::laserFeatureInfoHandler, this,
                         std::placeholders::_1), sub_options);
+
+        subIMUOdometry = this->create_subscription<nav_msgs::msg::Odometry>(
+            ProjectName + "/state_estimation", 20,
+            std::bind(&laserMapping::imuOdometryHandler, this, std::placeholders::_1), sub_options);
+
+        subVisualOdometry = this->create_subscription<nav_msgs::msg::Odometry>(
+            ODOM_TOPIC, 20,
+            std::bind(&laserMapping::visualOdometryHandler, this, std::placeholders::_1), sub_options);
                         
 
         pubLaserCloudSurround = this->create_publisher<sensor_msgs::msg::PointCloud2>(
@@ -121,6 +134,8 @@ namespace super_odometry {
 
         prediction_source = PredictionSource::IMU_ORIENTATION;
         timeLatestImuOdometry = rclcpp::Time(0,0,RCL_ROS_TIME);
+        RCLCPP_INFO(this->get_logger(), "LaserMapping IMU odom topic: %s", (ProjectName + "/state_estimation").c_str());
+        RCLCPP_INFO(this->get_logger(), "LaserMapping visual odom topic: %s", ODOM_TOPIC.c_str());
 
         initializationParam();
 
@@ -261,6 +276,204 @@ namespace super_odometry {
         
         IMUPredictionBuf.push(imuposes);
         mBuf.unlock();
+    }
+
+    void laserMapping::imuOdometryHandler(const nav_msgs::msg::Odometry::SharedPtr msgIn) {
+        std::lock_guard<std::mutex> lock(mBuf);
+        const double stamp = secs(msgIn);
+        imu_odom_buf.addMeas(msgIn, stamp);
+        timeLatestImuOdometry = msgIn->header.stamp;
+    }
+
+    void laserMapping::visualOdometryHandler(const nav_msgs::msg::Odometry::SharedPtr msgIn) {
+        std::lock_guard<std::mutex> lock(mBuf);
+        const double stamp = secs(msgIn);
+        visual_odom_buf.addMeas(msgIn, stamp);
+    }
+
+    void laserMapping::getOdometryFromTimestamp(
+        MapRingBuffer<nav_msgs::msg::Odometry::SharedPtr> &buf, const double &timestamp,
+        Eigen::Vector3d &T, Eigen::Quaterniond &Q) {
+        T = Eigen::Vector3d::Zero();
+        Q = Eigen::Quaterniond::Identity();
+
+        if (buf.measMap_.empty()) {
+            return;
+        }
+
+        auto after_it = buf.measMap_.lower_bound(timestamp);
+        if (after_it == buf.measMap_.begin()) {
+            const auto &msg = after_it->second;
+            T = Eigen::Vector3d(msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z);
+            Q = Eigen::Quaterniond(
+                msg->pose.pose.orientation.w, msg->pose.pose.orientation.x,
+                msg->pose.pose.orientation.y, msg->pose.pose.orientation.z);
+            if (Q.norm() < 1e-6) {
+                Q = Eigen::Quaterniond::Identity();
+            } else {
+                Q.normalize();
+            }
+            return;
+        }
+
+        if (after_it == buf.measMap_.end()) {
+            const auto &msg = buf.measMap_.rbegin()->second;
+            T = Eigen::Vector3d(msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z);
+            Q = Eigen::Quaterniond(
+                msg->pose.pose.orientation.w, msg->pose.pose.orientation.x,
+                msg->pose.pose.orientation.y, msg->pose.pose.orientation.z);
+            if (Q.norm() < 1e-6) {
+                Q = Eigen::Quaterniond::Identity();
+            } else {
+                Q.normalize();
+            }
+            return;
+        }
+
+        auto before_it = std::prev(after_it);
+        const double before_t = before_it->first;
+        const double after_t = after_it->first;
+        const double denom = after_t - before_t;
+        double ratio = denom > 1e-9 ? (timestamp - before_t) / denom : 0.0;
+        ratio = std::max(0.0, std::min(1.0, ratio));
+
+        const auto &before_msg = before_it->second;
+        const auto &after_msg = after_it->second;
+        const Eigen::Vector3d p0(
+            before_msg->pose.pose.position.x,
+            before_msg->pose.pose.position.y,
+            before_msg->pose.pose.position.z);
+        const Eigen::Vector3d p1(
+            after_msg->pose.pose.position.x,
+            after_msg->pose.pose.position.y,
+            after_msg->pose.pose.position.z);
+        Eigen::Quaterniond q0(
+            before_msg->pose.pose.orientation.w,
+            before_msg->pose.pose.orientation.x,
+            before_msg->pose.pose.orientation.y,
+            before_msg->pose.pose.orientation.z);
+        Eigen::Quaterniond q1(
+            after_msg->pose.pose.orientation.w,
+            after_msg->pose.pose.orientation.x,
+            after_msg->pose.pose.orientation.y,
+            after_msg->pose.pose.orientation.z);
+        if (q0.norm() < 1e-6) {
+            q0 = Eigen::Quaterniond::Identity();
+        } else {
+            q0.normalize();
+        }
+        if (q1.norm() < 1e-6) {
+            q1 = Eigen::Quaterniond::Identity();
+        } else {
+            q1.normalize();
+        }
+        if (q0.dot(q1) < 0.0) {
+            q1.coeffs() *= -1.0;
+        }
+
+        T = (1.0 - ratio) * p0 + ratio * p1;
+        Q = q0.slerp(ratio, q1);
+        Q.normalize();
+    }
+
+    void laserMapping::extractRelativeTransform(
+        MapRingBuffer<nav_msgs::msg::Odometry::SharedPtr> &buf, Transformd &T_pre_cur, bool imu_prediction) {
+        T_pre_cur = Transformd::Identity();
+        if (buf.getSize() < 2) {
+            return;
+        }
+        if (timeLaserOdometryPrev <= 0.0 || timeLaserOdometry <= timeLaserOdometryPrev) {
+            return;
+        }
+
+        double first_t = 0.0;
+        double last_t = 0.0;
+        if (!buf.getFirstTime(first_t) || !buf.getLastTime(last_t)) {
+            return;
+        }
+
+        if (timeLaserOdometryPrev < first_t - kOdomInterpolationSlackSec ||
+            timeLaserOdometry > last_t + kOdomInterpolationSlackSec) {
+            return;
+        }
+
+        Eigen::Vector3d p_prev, p_cur;
+        Eigen::Quaterniond q_prev, q_cur;
+        getOdometryFromTimestamp(buf, timeLaserOdometryPrev, p_prev, q_prev);
+        getOdometryFromTimestamp(buf, timeLaserOdometry, p_cur, q_cur);
+        Transformd T_w_prev(q_prev, p_prev);
+        Transformd T_w_cur(q_cur, p_cur);
+        T_pre_cur = T_w_prev.inverse() * T_w_cur;
+        T_pre_cur.rot.normalize();
+        if (imu_prediction) {
+            T_pre_cur.pos.setZero();
+        }
+    }
+
+    void laserMapping::extractIMUOdometry(double timeLaserFrame, Transformd &T_w_lidar) {
+        if (imu_odom_buf.getSize() < 1) {
+            return;
+        }
+        double first_t = 0.0;
+        double last_t = 0.0;
+        if (!imu_odom_buf.getFirstTime(first_t) || !imu_odom_buf.getLastTime(last_t)) {
+            return;
+        }
+        if (timeLaserFrame < first_t - kOdomInterpolationSlackSec ||
+            timeLaserFrame > last_t + kOdomInterpolationSlackSec) {
+            return;
+        }
+        Eigen::Vector3d position;
+        Eigen::Quaterniond orientation;
+        getOdometryFromTimestamp(imu_odom_buf, timeLaserFrame, position, orientation);
+        T_w_lidar.pos = position;
+        T_w_lidar.rot = orientation;
+        T_w_lidar.rot.normalize();
+    }
+
+    bool laserMapping::extractVisualIMUOdometryAndCheck(Transformd &T_w_lidar) {
+        T_w_lidar = Transformd::Identity();
+        if (visual_odom_buf.getSize() < 2) {
+            return false;
+        }
+        if (timeLaserOdometryPrev <= 0.0 || timeLaserOdometry <= timeLaserOdometryPrev) {
+            return false;
+        }
+
+        double first_t = 0.0;
+        double last_t = 0.0;
+        if (!visual_odom_buf.getFirstTime(first_t) || !visual_odom_buf.getLastTime(last_t)) {
+            return false;
+        }
+        if (timeLaserOdometryPrev < first_t - kOdomInterpolationSlackSec ||
+            timeLaserOdometry > last_t + kOdomInterpolationSlackSec) {
+            return false;
+        }
+
+        extractRelativeTransform(visual_odom_buf, T_w_lidar, false);
+        const double dt = timeLaserOdometry - timeLaserOdometryPrev;
+        return isRelativeTransformValid(T_w_lidar, dt);
+    }
+
+    bool laserMapping::isRelativeTransformValid(const Transformd& relative_pose, double dt) const {
+        if (dt <= 1e-4) {
+            return false;
+        }
+
+        if (!relative_pose.pos.allFinite() || !relative_pose.rot.coeffs().allFinite()) {
+            return false;
+        }
+
+        const double speed = relative_pose.pos.norm() / dt;
+        Eigen::Quaterniond q = relative_pose.rot.normalized();
+        if (q.w() < 0.0) {
+            q.coeffs() *= -1.0;
+        }
+        const double angle_deg = 2.0 * std::acos(std::max(-1.0, std::min(1.0, q.w()))) * 180.0 / M_PI;
+        if (speed > (2.0 * config_.velocity_failure_threshold)) {
+            return false;
+        }
+        return angle_deg < kMaxSingleStepRotationDeg;
     }
 
 
@@ -406,8 +619,7 @@ if(slam.isDegenerate){
 
 }else{
     // If system is not degenerate, use IMU orientation 
-    sensorMeas.lio_prediction_status=useLIOOdometry(sensorMeas.lioPrediction);
-    if(sensorMeas.lio_prediction_status){
+    if(sensorMeas.lio_prediction_status && useLIOOdometry(sensorMeas.lioPrediction)){
         return PredictionSource::LIO_ODOM;
     }
     sensorMeas.imu_orientation_status=useIMUPrediction(sensorMeas.imuPrediction);
@@ -668,6 +880,15 @@ return PredictionSource::CONSTANT_VELOCITY;
     laserMapping::SensorData laserMapping::extractSensorData(){
         
         SensorData data;
+        data.vioPrediction = Transformd::Identity();
+        data.lioPrediction = Transformd::Identity();
+        data.nioPrediction = Transformd::Identity();
+        data.imuPrediction = Eigen::Quaterniond::Identity();
+        data.vio_prediction_status = false;
+        data.lio_prediction_status = false;
+        data.nio_prediction_status = false;
+        data.imu_orientation_status = false;
+
         //1. Extract timestamp
         data.timestamp=secs(&fullResBuf.front());
         timeLaserOdometry=data.timestamp;
@@ -682,16 +903,28 @@ return PredictionSource::CONSTANT_VELOCITY;
 
         //3. Extract IMU prediction 
       
-        data.lioPrediction=IMUPredictionBuf.front();
-        data.imuPrediction=IMUPredictionBuf.front().rot;
+        data.lioPrediction = IMUPredictionBuf.front();
+        data.imuPrediction = IMUPredictionBuf.front().rot;
         data.imuPrediction.normalize();
         IMUPredictionBuf.pop();
 
-        //4 set status for prediction source (TODO: didn't release code other prediction source yet) 
-        data.vio_prediction_status=false;
-        data.lio_prediction_status=false;
-        data.nio_prediction_status=false;
-        data.imu_orientation_status=false;
+        //4. Pull IMU preintegration odometry (absolute pose) if available.
+        Transformd imu_odom_pose = data.lioPrediction;
+        double imu_first_t = 0.0;
+        double imu_last_t = 0.0;
+        if (imu_odom_buf.getFirstTime(imu_first_t) && imu_odom_buf.getLastTime(imu_last_t) &&
+            data.timestamp >= imu_first_t - kOdomInterpolationSlackSec &&
+            data.timestamp <= imu_last_t + kOdomInterpolationSlackSec) {
+            extractIMUOdometry(data.timestamp, imu_odom_pose);
+            data.lioPrediction = imu_odom_pose;
+            data.lio_prediction_status = true;
+        }
+
+        //5. Pull visual odometry as relative pose increment (for degenerate fallback).
+        data.vio_prediction_status = extractVisualIMUOdometryAndCheck(data.vioPrediction);
+        if (!data.vio_prediction_status) {
+            data.vioPrediction = Transformd::Identity();
+        }
 
         return data;
     }
@@ -739,7 +972,7 @@ return PredictionSource::CONSTANT_VELOCITY;
     }
 
     bool laserMapping::useLIOOdometry(const Transformd& lioPrediction){
-        if (lioPrediction.rot.w()!=0 && lioPrediction.pos.norm()!=0)
+        if (lioPrediction.rot.w() != 0.0 && lioPrediction.pos.allFinite() && lioPrediction.rot.coeffs().allFinite())
         {
             q_wodom_curr=lioPrediction.rot;
             q_wodom_curr.normalize();

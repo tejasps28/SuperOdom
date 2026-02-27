@@ -48,3 +48,17 @@
         acc_w: 6.4356659353532566e-05          # accelerometer bias random work noise standard deviation.  #0.02
         gyr_w: 3.5640318696367613e-05       # gyroscope bias random work noise standard deviation.     #4.0e-5
         g_norm: 9.80511    # 0 means you need to provide both imu-camera and laser-camera extrinsic
+
+    # Visual Odometry Params (lightweight monocular VO)
+    visual_odometry_node:
+        image_topic: "/zed/zed_node/right/image_rect_color"
+        camera_info_topic: "/zed/zed_node/right/camera_info"
+        odom_topic: "/state_estimation2"
+        frame_id: "map"
+        child_frame_id: "sensor"
+        max_features: 1200
+        min_tracked_features: 120
+        min_inliers: 60
+        max_lost_frames: 5
+        ransac_threshold_px: 1.5
+        translation_scale: 0.0

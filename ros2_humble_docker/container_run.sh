@@ -20,8 +20,8 @@ fi
 # Assign the arguments to variables for clarity
 CONTAINER_NAME="$1"
 IMAGE_NAME="$2"
-PROJECT_DIR="/home/qb/humanoid_slam/src"
-DATASET_DIR="/home/qb/humanoid_slam/dataset"
+PROJECT_DIR= "/home/tejas/project_workspaces/docker_related/super_odom_vo" #"/home/qb/humanoid_slam/src"
+DATASET_DIR="/home/tejas/project_workspaces/datasets"
 
 # Allow Docker containers to connect to X11 display
 xhost +local:docker
@@ -35,9 +35,8 @@ fi
 
 # Launch the nvidia-docker container with optimized RViz support
 docker run --privileged -it \
-           --runtime=nvidia \
            --gpus all \
-           --volume="$PROJECT_DIR:/root/superodom_ws/src" \
+           --volume="$PROJECT_DIR:/root/ros2_ws/src" \
            --volume="$DATASET_DIR:/root/data" \
            --volume=/tmp/.X11-unix:/tmp/.X11-unix:rw \
            --network=host \

@@ -90,6 +90,16 @@ def generate_launch_description():
         }],
     )
 
+    visual_odometry_node = Node(
+        package="super_odometry",
+        executable="visual_odometry_node",
+        output={
+            "stdout": "screen",
+            "stderr": "screen",
+        },
+        parameters=[LaunchConfiguration("config_file")],
+    )
+
 
     return LaunchDescription([
         launch_ros.actions.SetParameter(name='use_sim_time', value='false'),
@@ -103,4 +113,5 @@ def generate_launch_description():
         feature_extraction_node,
         laser_mapping_node,
         imu_preintegration_node,
+        visual_odometry_node,
     ])

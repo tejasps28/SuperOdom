@@ -1,0 +1,42 @@
+/**:
+  ros__parameters:
+    map_frame: "map"
+    sensor_frame: "sensor"
+    gravity_frame: "gravity"
+
+    # Input topics
+    imu_odom_in: "/state_estimation"
+    lidar_odom_in: "/laser_odometry"
+    map_in: "/laser_cloud_map"
+    scan_in: "/registered_scan"
+
+    # Output topics
+    imu_odom_out: "/SuperOdom/state_estimation_aligned"
+    lidar_odom_out: "/SuperOdom/laser_odometry_aligned"
+    map_out: "/SuperOdom/laser_cloud_map_aligned"
+    scan_out: "/SuperOdom/registered_scan_aligned"
+    image_raw_out: "/tartanair/image_left/image"
+
+    # Colorization topics
+    use_compressed_image: false
+    image_in: "/tartanair/image_left/image"
+    camera_info_in: "/tartanair/image_left/camera_info"
+    camera_frame: "cam_left"
+    scan_color_out: "/SuperOdom/registered_scan_color"
+    sync_tolerance: 0.05
+
+    # camera -> sensor static extrinsics (from TF cam_left->velodyne; adjust for cam_right if needed)
+    # q(x,y,z,w) = [0.70710678, 0, 0, 0.70710678], t = [0,0,0]
+    use_static_extrinsics: true
+    cam_tx: 0.0
+    cam_ty: 0.0
+    cam_tz: 0.0
+    cam_qx: 0.70710678
+    cam_qy: 0.0
+    cam_qz: 0.0
+    cam_qw: 0.70710678
+    cam_roll_deg: 0.0
+    cam_pitch_deg: 0.0
+    cam_yaw_deg: 0.0
+
+    rotate_twist: false

@@ -71,7 +71,9 @@ class ROS2PointCloudProcessor(Node):
                  save_interval: float = 30.0,
                  output_dir: str = "/home/qb/humanoid_slam/src/mapping_result",
                  cloud_topic: str = "/registered_scan",
-                 odom_topic: str = "/laser_odometry"):
+                 odom_topic: str = "/laser_odometry",
+                 record_odom_tum: bool = False,
+                 odom_tum_out: Optional[str] = None):
         """
         Initialize the ROS2 point cloud processor.
         
@@ -102,6 +104,22 @@ class ROS2PointCloudProcessor(Node):
         # Thread safety
         self.map_lock = threading.Lock()
         self.processing_queue = deque(maxlen=100)  # Limit queue size
+        self.odom_lock = threading.Lock()
+
+        # Optional odom recording (TUM format)
+        self.record_odom_tum = record_odom_tum
+        self.odom_tum_path: Optional[Path] = None
+        self.odom_tum_file = None
+        if self.record_odom_tum:
+            if odom_tum_out is None or odom_tum_out.strip() == "":
+                self.odom_tum_path = self.output_dir / "odom_tum.txt"
+            else:
+                self.odom_tum_path = Path(odom_tum_out)
+                if not self.odom_tum_path.is_absolute():
+                    self.odom_tum_path = self.output_dir / self.odom_tum_path
+            self.odom_tum_path.parent.mkdir(parents=True, exist_ok=True)
+            self.odom_tum_file = open(self.odom_tum_path, "w")
+            self.odom_tum_file.write("# TUM format: timestamp tx ty tz qx qy qz qw\n")
         
         # Statistics
         self.stats = {
@@ -165,6 +183,8 @@ class ROS2PointCloudProcessor(Node):
         self.get_logger().info(f"Odometry topic: {odom_topic}")
         self.get_logger().info(f"Voxel size: {voxel_size}m")
         self.get_logger().info(f"Output directory: {output_dir}")
+        if self.record_odom_tum and self.odom_tum_path is not None:
+            self.get_logger().info(f"Recording odom as TUM to: {self.odom_tum_path}")
         
     def cloud_callback(self, msg: PointCloud2):
         """Callback for point cloud messages."""
@@ -181,6 +201,17 @@ class ROS2PointCloudProcessor(Node):
         """Callback for odometry messages."""
         # Store latest pose for reference
         self.latest_pose = msg
+        if self.record_odom_tum and self.odom_tum_file is not None:
+            try:
+                t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+                p = msg.pose.pose.position
+                q = msg.pose.pose.orientation
+                line = f"{t:.9f} {p.x:.6f} {p.y:.6f} {p.z:.6f} {q.x:.6f} {q.y:.6f} {q.z:.6f} {q.w:.6f}\n"
+                with self.odom_lock:
+                    self.odom_tum_file.write(line)
+                    self.odom_tum_file.flush()
+            except Exception as e:
+                self.get_logger().debug(f"Error writing odom TUM: {e}")
     
     def save_callback(self, msg: Bool):
         """Callback for save command."""
@@ -516,10 +547,22 @@ class ROS2PointCloudProcessor(Node):
                 'queue_size': len(self.processing_queue)
             }
 
+    def close(self):
+        try:
+            if self.odom_tum_file is not None:
+                with self.odom_lock:
+                    self.odom_tum_file.close()
+        except Exception:
+            pass
+
 
 def main():
     """Main function."""
     parser = argparse.ArgumentParser(description='ROS2 Lidar Map Builder')
+    parser.add_argument('--aligned', action='store_true',
+                       help='Use gravity-aligned topics: /registered_scan_aligned and /laser_odometry_aligned')
+    parser.add_argument('--colorized', action='store_true',
+                       help='Alias for --aligned (kept for convenience)')
     parser.add_argument('--voxel_size', type=float, default=0.05,
                        help='Voxel size for downsampling (meters)')
     parser.add_argument('--max_points', type=int, default=10000000,
@@ -529,14 +572,26 @@ def main():
     parser.add_argument('--output_dir', type=str, default='/root/superodom_ws/src/SuperOdom/script/mapping_result',
                        help='Directory to save output files')
     parser.add_argument('--cloud_topic', type=str, default='/registered_scan',
-                       help='ROS2 topic for point cloud data')
+                       help='ROS2 topic for point cloud data (overrides --aligned defaults)')
     parser.add_argument('--odom_topic', type=str, default='/laser_odometry',
-                       help='ROS2 topic for odometry data')
+                       help='ROS2 topic for odometry data (overrides --aligned defaults)')
+    parser.add_argument('--record_odom_tum', action='store_true',
+                       help='Record the odometry topic to a TUM-format txt file in output_dir')
+    parser.add_argument('--odom_tum_out', type=str, default='odom_tum.txt',
+                       help='Odom TUM output file name or path (default: odom_tum.txt in output_dir)')
     parser.add_argument('--log_level', type=str, default='info',
                        choices=['debug', 'info', 'warn', 'error'],
                        help='Log level')
     
     args = parser.parse_args()
+
+    use_aligned = bool(args.aligned or args.colorized)
+    if use_aligned:
+        # Only override if user left them at the defaults.
+        if args.cloud_topic == '/registered_scan':
+            args.cloud_topic = '/registered_scan_aligned'
+        if args.odom_topic == '/laser_odometry':
+            args.odom_topic = '/laser_odometry_aligned'
     
     # Initialize ROS2
     rclpy.init()
@@ -558,7 +613,9 @@ def main():
             save_interval=args.save_interval,
             output_dir=args.output_dir,
             cloud_topic=args.cloud_topic,
-            odom_topic=args.odom_topic
+            odom_topic=args.odom_topic,
+            record_odom_tum=args.record_odom_tum,
+            odom_tum_out=args.odom_tum_out,
         )
         
         print("=== ROS2 Lidar Map Builder ===")
@@ -581,6 +638,7 @@ def main():
         if 'processor' in locals():
             print("Saving final map...")
             processor._save_final_map()
+            processor.close()
             
             # Print final statistics
             stats = processor.get_statistics()

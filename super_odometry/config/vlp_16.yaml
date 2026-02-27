@@ -2,6 +2,7 @@
   ros__parameters:
     imu_topic: "/imu/data"
     laser_topic: "/velodyne_points"
+    odom_topic: "/visual_odometry"
     sensor: "velodyne"
     use_imu_roll_pitch: false
     
@@ -47,3 +48,15 @@
         gyr_w: 3.5640318696367613e-05       # gyroscope bias random work noise standard deviation.     #4.0e-5
         g_norm: 9.80511    # 0 means you need to provide both imu-camera and laser-camera extrinsic
 
+    visual_odometry_node:
+        image_topic: "/camera/image_raw"
+        camera_info_topic: "/camera/camera_info"
+        odom_topic: "/visual_odometry"
+        frame_id: "map"
+        child_frame_id: "sensor"
+        max_features: 1200
+        min_tracked_features: 120
+        min_inliers: 60
+        max_lost_frames: 5
+        ransac_threshold_px: 1.5
+        translation_scale: 0.0

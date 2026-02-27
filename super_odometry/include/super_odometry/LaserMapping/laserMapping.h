@@ -113,6 +113,10 @@ namespace super_odometry {
 
         void laserCloudRawDataHandler(const sensor_msgs::msg::PointCloud2::SharedPtr laserCloudRawdata);
 
+        void imuOdometryHandler(const nav_msgs::msg::Odometry::SharedPtr msgIn);
+
+        void visualOdometryHandler(const nav_msgs::msg::Odometry::SharedPtr msgIn);
+
         void extractIMUOdometry(double timeLaserFrame, Transformd &T_w_lidar);
 
         bool extractVisualIMUOdometryAndCheck(Transformd &T_w_lidar);
@@ -152,6 +156,8 @@ namespace super_odometry {
         bool useIMUPrediction(const Eigen::Quaterniond& imuPrediction);
 
         bool useLIOOdometry(const Transformd& lioPrediction);
+
+        bool isRelativeTransformValid(const Transformd& relative_pose, double dt) const;
 
         void performSLAMOptimization();
 
