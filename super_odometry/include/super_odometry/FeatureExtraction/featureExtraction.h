@@ -66,6 +66,7 @@ namespace super_odometry {
         int provide_point_time;
         bool use_dynamic_mask;
         bool use_imu_roll_pitch;
+        bool use_visual_deskew;
         bool debug_view_enabled;
         float min_range;
         float max_range;

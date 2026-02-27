@@ -132,6 +132,7 @@ namespace super_odometry {
         this->declare_parameter<int>("feature_extraction_node.filter_point_size", 3);
         this->declare_parameter<int>("feature_extraction_node.provide_point_time", 1);
         this->declare_parameter<bool>("feature_extraction_node.debug_view", false);
+        this->declare_parameter<bool>("feature_extraction_node.use_visual_deskew", true);
         this->declare_parameter<double>("feature_extraction_node.imu_acc_x_limit", 1.0);
         this->declare_parameter<double>("feature_extraction_node.imu_acc_y_limit", 1.0);
         this->declare_parameter<double>("feature_extraction_node.imu_acc_z_limit", 1.0);
@@ -151,6 +152,7 @@ namespace super_odometry {
         config_.provide_point_time = this->get_parameter("feature_extraction_node.provide_point_time").as_int();
         config_.use_dynamic_mask = this->get_parameter("feature_extraction_node.use_dynamic_mask").as_bool(); 
         config_.debug_view_enabled = this->get_parameter("feature_extraction_node.debug_view").as_bool();
+        config_.use_visual_deskew = this->get_parameter("feature_extraction_node.use_visual_deskew").as_bool();
         config_.imu_acc_x_limit = this->get_parameter("feature_extraction_node.imu_acc_x_limit").as_double();
         config_.imu_acc_y_limit = this->get_parameter("feature_extraction_node.imu_acc_y_limit").as_double();
         config_.imu_acc_z_limit = this->get_parameter("feature_extraction_node.imu_acc_z_limit").as_double();
@@ -643,8 +645,15 @@ void featureExtraction::removePointDistortion(
     {
         LASER_IMU_SYNC_SCCUESS = synchronize_measurements<Imu::Ptr>(imuBuf, lidarBuf);
         LASER_CAMERA_SYNC_SUCCESS = synchronize_measurements<nav_msgs::msg::Odometry::SharedPtr>(visualOdomBuf, lidarBuf);
+        const bool visual_sync_available = config_.use_visual_deskew && LASER_CAMERA_SYNC_SUCCESS;
 
-        if ((LASER_IMU_SYNC_SCCUESS == true or LASER_CAMERA_SYNC_SUCCESS == true) and lidarBuf.getSize() > 0)
+        if (LASER_CAMERA_SYNC_SUCCESS && !config_.use_visual_deskew) {
+            RCLCPP_INFO_THROTTLE(
+                this->get_logger(), *this->get_clock(), 3000,
+                "Visual deskew disabled (`feature_extraction_node.use_visual_deskew=false`); using IMU-only deskew path.");
+        }
+
+        if ((LASER_IMU_SYNC_SCCUESS == true or visual_sync_available == true) and lidarBuf.getSize() > 0)
         {
             double lidar_start_time;
             lidarBuf.getFirstTime(lidar_start_time);
@@ -654,20 +663,20 @@ void featureExtraction::removePointDistortion(
             double lidar_end_time = lidar_start_time + lidar_msg->back().time;
 
           
-            if (LASER_IMU_SYNC_SCCUESS == true and LASER_CAMERA_SYNC_SUCCESS == true)
+            if (LASER_IMU_SYNC_SCCUESS == true and visual_sync_available == true)
             {
                 RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "\033[1;32m----> Both IMU ,VIO laserscan are synchronized!.\033[0m");
                 removePointDistortion<nav_msgs::msg::Odometry::SharedPtr>(lidar_start_time, lidar_end_time, visualOdomBuf, lidar_msg);
              
             }
 
-            if (LASER_IMU_SYNC_SCCUESS == false and LASER_CAMERA_SYNC_SUCCESS == true)
+            if (LASER_IMU_SYNC_SCCUESS == false and visual_sync_available == true)
             {
                 removePointDistortion<nav_msgs::msg::Odometry::SharedPtr>(lidar_start_time, lidar_end_time, visualOdomBuf, lidar_msg);
                
             }
 
-            if (LASER_IMU_SYNC_SCCUESS == true and LASER_CAMERA_SYNC_SUCCESS == false)
+            if (LASER_IMU_SYNC_SCCUESS == true and visual_sync_available == false)
             {
                 // RCLCPP_INFO(this->get_logger(), "\033[1;32m----> IMU and laserscan is synchronized!.\033[0m");
                 removePointDistortion<Imu::Ptr>(lidar_start_time, lidar_end_time, imuBuf, lidar_msg);
@@ -958,7 +967,28 @@ int featureExtraction::calculateAdaptiveSkip(const pcl::PointCloud<point_os::Poi
         
         tmpOusterCloudIn.reset(new pcl::PointCloud<point_os::OusterPointXYZIRT>());
 
-        if (config_.provide_point_time)
+        bool has_time_field = false;
+        bool has_ring_field = false;
+        bool has_intensity_field = false;
+        for (const auto &f : laserCloudMsg->fields) {
+            if (f.name == "time" || f.name == "t") {
+                has_time_field = true;
+            } else if (f.name == "ring") {
+                has_ring_field = true;
+            } else if (f.name == "intensity") {
+                has_intensity_field = true;
+            }
+        }
+
+        bool use_input_point_time = config_.provide_point_time;
+        if (config_.sensor == SensorType::VELODYNE && config_.provide_point_time &&
+            (!has_time_field || !has_ring_field)) {
+            use_input_point_time = false;
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                "Input cloud has no time/ring fields. Falling back to synthetic per-point timing.");
+        }
+
+        if (use_input_point_time)
         {
 
             if (config_.sensor == SensorType::VELODYNE)
@@ -990,7 +1020,20 @@ int featureExtraction::calculateAdaptiveSkip(const pcl::PointCloud<point_os::Poi
         else
         {
             pcl::PointCloud<PointType>::Ptr laserCloudIn_ptr_(new pcl::PointCloud<PointType>());
-            pcl::fromROSMsg(*laserCloudMsg, *laserCloudIn_ptr_);
+            if (has_intensity_field) {
+                pcl::fromROSMsg(*laserCloudMsg, *laserCloudIn_ptr_);
+            } else {
+                pcl::PointCloud<pcl::PointXYZ>::Ptr xyz_cloud(new pcl::PointCloud<pcl::PointXYZ>());
+                pcl::fromROSMsg(*laserCloudMsg, *xyz_cloud);
+                laserCloudIn_ptr_->points.resize(xyz_cloud->points.size());
+                laserCloudIn_ptr_->is_dense = xyz_cloud->is_dense;
+                for (size_t i = 0; i < xyz_cloud->points.size(); ++i) {
+                    laserCloudIn_ptr_->points[i].x = xyz_cloud->points[i].x;
+                    laserCloudIn_ptr_->points[i].y = xyz_cloud->points[i].y;
+                    laserCloudIn_ptr_->points[i].z = xyz_cloud->points[i].z;
+                    laserCloudIn_ptr_->points[i].intensity = 1.0f;
+                }
+            }
             assignTimeforPointCloud(laserCloudIn_ptr_);
             pointCloud = pointCloudwithTime;
         }

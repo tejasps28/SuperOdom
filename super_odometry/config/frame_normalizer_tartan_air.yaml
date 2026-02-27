@@ -23,7 +23,7 @@
     camera_info_in: "/tartanair/image_left/camera_info"
     camera_frame: "cam_left"
     scan_color_out: "/SuperOdom/registered_scan_color"
-    sync_tolerance: 0.05
+    sync_tolerance: 0.7
 
     # camera -> sensor static extrinsics (from TF cam_left->velodyne; adjust for cam_right if needed)
     # q(x,y,z,w) = [0.70710678, 0, 0, 0.70710678], t = [0,0,0]

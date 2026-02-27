@@ -31,6 +31,7 @@
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2/transform_datatypes.h>
 #include <std_msgs/msg/float32.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include "super_odometry/LidarProcess/LidarSlam.h"
 #include "super_odometry/LidarProcess/LocalMap.h"
 #include "super_odometry/tic_toc.h"
@@ -50,6 +51,7 @@ namespace super_odometry {
         bool enable_ouster_data;
         bool publish_only_feature_points;
         bool use_imu_roll_pitch;
+        bool enable_visual_fusion;
         int max_surface_features;
         double velocity_failure_threshold;
         bool auto_voxel_size;
@@ -215,6 +217,8 @@ namespace super_odometry {
         rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pubprediction_source;
         rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubVIOPrediction; 
         rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubLIOPrediction;
+        rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr pubVIOPredictionStatus;
+        rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr pubLIOPredictionStatus;
 
         rclcpp::TimerBase::SharedPtr process_timer_;
 

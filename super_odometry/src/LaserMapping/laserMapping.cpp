@@ -49,6 +49,7 @@ namespace super_odometry {
 
         RCLCPP_INFO(this->get_logger(), "DEBUG VIEW: %d", config_.debug_view_enabled);
         RCLCPP_INFO(this->get_logger(), "ENABLE OUSTER DATA: %d", config_.enable_ouster_data);
+        RCLCPP_INFO(this->get_logger(), "ENABLE VISUAL FUSION: %d", config_.enable_visual_fusion);
         RCLCPP_INFO(this->get_logger(), "line resolution %f plane resolution %f vision_laser_time_offset %f",
                 config_.lineRes, config_.planeRes, vision_laser_time_offset);
 
@@ -95,6 +96,11 @@ namespace super_odometry {
 
         pubLIOPrediction= this->create_publisher<nav_msgs::msg::Odometry>(
             ProjectName+"/lio_prediction", 1);
+
+        pubVIOPredictionStatus = this->create_publisher<std_msgs::msg::Bool>(
+            ProjectName + "/vio_prediction_status", 1);
+        pubLIOPredictionStatus = this->create_publisher<std_msgs::msg::Bool>(
+            ProjectName + "/lio_prediction_status", 1);
 
 
         pubLaserAfterMappedPath = this->create_publisher<nav_msgs::msg::Path>(
@@ -201,6 +207,7 @@ namespace super_odometry {
         this->declare_parameter("laser_mapping_node.enable_ouster_data", false);
         this->declare_parameter("laser_mapping_node.publish_only_feature_points", false);
         this->declare_parameter("laser_mapping_node.use_imu_roll_pitch", false);
+        this->declare_parameter("laser_mapping_node.enable_visual_fusion", true);
         this->declare_parameter("laser_mapping_node.max_surface_features", 2000);
         this->declare_parameter("laser_mapping_node.velocity_failure_threshold", 30.0);
         this->declare_parameter("laser_mapping_node.auto_voxel_size", true);
@@ -224,6 +231,7 @@ namespace super_odometry {
         config_.debug_view_enabled = this->get_parameter("laser_mapping_node.debug_view").as_bool();
         config_.enable_ouster_data = this->get_parameter("laser_mapping_node.enable_ouster_data").as_bool();
         config_.publish_only_feature_points = this->get_parameter("laser_mapping_node.publish_only_feature_points").as_bool();
+        config_.enable_visual_fusion = this->get_parameter("laser_mapping_node.enable_visual_fusion").as_bool();
         // config_.use_imu_roll_pitch = this->get_parameter("laser_mapping_node.use_imu_roll_pitch").as_bool();
         config_.max_surface_features = this->get_parameter("laser_mapping_node.max_surface_features").as_int();
         config_.velocity_failure_threshold = this->get_parameter("laser_mapping_node.velocity_failure_threshold").as_double();
@@ -610,7 +618,7 @@ laserMapping::PredictionSource laserMapping::determinePredictionSource(){
 // If system is degerenate, prefer VIO or learning imu odom
 
 if(slam.isDegenerate){
-    if(sensorMeas.vio_prediction_status){
+    if(config_.enable_visual_fusion && sensorMeas.vio_prediction_status){
         return PredictionSource::VIO_ODOM;
     }
     if(sensorMeas.nio_prediction_status){
@@ -658,6 +666,14 @@ return PredictionSource::CONSTANT_VELOCITY;
                 break;
         }
         pubprediction_source->publish(prediction_source_msg);
+
+        std_msgs::msg::Bool vio_status_msg;
+        vio_status_msg.data = sensorMeas.vio_prediction_status;
+        pubVIOPredictionStatus->publish(vio_status_msg);
+
+        std_msgs::msg::Bool lio_status_msg;
+        lio_status_msg.data = sensorMeas.lio_prediction_status;
+        pubLIOPredictionStatus->publish(lio_status_msg);
 
         if (frameCount % 5 == 0 && config_.debug_view_enabled) {
             laserCloudSurround->clear();
@@ -921,8 +937,13 @@ return PredictionSource::CONSTANT_VELOCITY;
         }
 
         //5. Pull visual odometry as relative pose increment (for degenerate fallback).
-        data.vio_prediction_status = extractVisualIMUOdometryAndCheck(data.vioPrediction);
-        if (!data.vio_prediction_status) {
+        if (config_.enable_visual_fusion) {
+            data.vio_prediction_status = extractVisualIMUOdometryAndCheck(data.vioPrediction);
+            if (!data.vio_prediction_status) {
+                data.vioPrediction = Transformd::Identity();
+            }
+        } else {
+            data.vio_prediction_status = false;
             data.vioPrediction = Transformd::Identity();
         }
 

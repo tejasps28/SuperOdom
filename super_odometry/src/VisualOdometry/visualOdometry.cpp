@@ -1,11 +1,13 @@
 #include "super_odometry/VisualOdometry/visualOdometry.h"
 
 #include <algorithm>
+#include <cctype>
 
 #include <opencv2/calib3d.hpp>
 #include <opencv2/core/eigen.hpp>
 #include <opencv2/imgproc.hpp>
 #include <sensor_msgs/image_encodings.hpp>
+#include <std_msgs/msg/header.hpp>
 
 namespace super_odometry {
 
@@ -17,6 +19,9 @@ visualOdometry::visualOdometry(const rclcpp::NodeOptions &options)
       max_lost_frames_(5),
       ransac_threshold_px_(1.5),
       translation_scale_(0.0),
+      publish_debug_topics_(true),
+      publish_debug_image_(false),
+      debug_image_topic_("/SuperOdom/vo_debug_image"),
       camera_ready_(false),
       initialized_(false),
       lost_frames_(0),
@@ -55,10 +60,26 @@ void visualOdometry::initInterface() {
         std::bind(&visualOdometry::imageHandler, this, std::placeholders::_1), sub_options);
 
     pub_visual_odom_ = this->create_publisher<nav_msgs::msg::Odometry>(odom_topic_, 10);
+    if (publish_debug_topics_) {
+        pub_detected_features_ =
+            this->create_publisher<std_msgs::msg::Int32>(ProjectName + "/vo_detected_features", 10);
+        pub_tracked_features_ =
+            this->create_publisher<std_msgs::msg::Int32>(ProjectName + "/vo_tracked_features", 10);
+        pub_inlier_features_ =
+            this->create_publisher<std_msgs::msg::Int32>(ProjectName + "/vo_inlier_features", 10);
+        pub_tracking_ok_ = this->create_publisher<std_msgs::msg::Bool>(ProjectName + "/vo_tracking_ok", 10);
+        if (publish_debug_image_) {
+            pub_debug_image_ = this->create_publisher<sensor_msgs::msg::Image>(debug_image_topic_, 10);
+        }
+    }
 
     RCLCPP_INFO(this->get_logger(), "Visual odometry image topic: %s", image_topic_.c_str());
     RCLCPP_INFO(this->get_logger(), "Visual odometry camera info topic: %s", camera_info_topic_.c_str());
     RCLCPP_INFO(this->get_logger(), "Visual odometry output topic: %s", odom_topic_.c_str());
+    RCLCPP_INFO(this->get_logger(), "Visual odometry debug topics enabled: %d", publish_debug_topics_);
+    if (publish_debug_topics_ && publish_debug_image_) {
+        RCLCPP_INFO(this->get_logger(), "Visual odometry debug image topic: %s", debug_image_topic_.c_str());
+    }
 }
 
 bool visualOdometry::readParameters() {
@@ -76,6 +97,11 @@ bool visualOdometry::readParameters() {
     this->declare_parameter<int>("visual_odometry_node.max_lost_frames", 5);
     this->declare_parameter<double>("visual_odometry_node.ransac_threshold_px", 1.5);
     this->declare_parameter<double>("visual_odometry_node.translation_scale", 0.0);
+    this->declare_parameter<bool>("visual_odometry_node.publish_debug_topics", true);
+    this->declare_parameter<bool>("visual_odometry_node.publish_debug_image", false);
+    this->declare_parameter<std::string>(
+        "visual_odometry_node.debug_image_topic",
+        (ProjectName.empty() ? std::string("/SuperOdom") : ProjectName) + std::string("/vo_debug_image"));
 
     image_topic_ = this->get_parameter("visual_odometry_node.image_topic").as_string();
     camera_info_topic_ = this->get_parameter("visual_odometry_node.camera_info_topic").as_string();
@@ -88,6 +114,9 @@ bool visualOdometry::readParameters() {
     max_lost_frames_ = this->get_parameter("visual_odometry_node.max_lost_frames").as_int();
     ransac_threshold_px_ = this->get_parameter("visual_odometry_node.ransac_threshold_px").as_double();
     translation_scale_ = this->get_parameter("visual_odometry_node.translation_scale").as_double();
+    publish_debug_topics_ = this->get_parameter("visual_odometry_node.publish_debug_topics").as_bool();
+    publish_debug_image_ = this->get_parameter("visual_odometry_node.publish_debug_image").as_bool();
+    debug_image_topic_ = this->get_parameter("visual_odometry_node.debug_image_topic").as_string();
 
     max_features_ = std::max(max_features_, 200);
     min_tracked_features_ = std::max(min_tracked_features_, 40);
@@ -160,6 +189,46 @@ void visualOdometry::publishOdometry(const rclcpp::Time &stamp) {
     pub_visual_odom_->publish(odom_msg);
 }
 
+void visualOdometry::publishDebugOutputs(const rclcpp::Time &stamp, const cv::Mat &gray, int detected_features,
+                                         int tracked_features, int inlier_features, bool tracking_ok,
+                                         const std::vector<cv::Point2f> &overlay_points) {
+    if (!publish_debug_topics_) {
+        return;
+    }
+
+    std_msgs::msg::Int32 detected_msg;
+    detected_msg.data = detected_features;
+    pub_detected_features_->publish(detected_msg);
+
+    std_msgs::msg::Int32 tracked_msg;
+    tracked_msg.data = tracked_features;
+    pub_tracked_features_->publish(tracked_msg);
+
+    std_msgs::msg::Int32 inlier_msg;
+    inlier_msg.data = inlier_features;
+    pub_inlier_features_->publish(inlier_msg);
+
+    std_msgs::msg::Bool status_msg;
+    status_msg.data = tracking_ok;
+    pub_tracking_ok_->publish(status_msg);
+
+    if (!publish_debug_image_ || !pub_debug_image_ || gray.empty()) {
+        return;
+    }
+
+    cv::Mat debug_bgr;
+    cv::cvtColor(gray, debug_bgr, cv::COLOR_GRAY2BGR);
+    for (const auto &point : overlay_points) {
+        cv::circle(debug_bgr, point, 2, tracking_ok ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 180, 255), -1);
+    }
+
+    auto debug_msg =
+        cv_bridge::CvImage(std_msgs::msg::Header(), sensor_msgs::image_encodings::BGR8, debug_bgr).toImageMsg();
+    debug_msg->header.stamp = stamp;
+    debug_msg->header.frame_id = frame_id_;
+    pub_debug_image_->publish(*debug_msg);
+}
+
 void visualOdometry::imageHandler(const sensor_msgs::msg::Image::SharedPtr msg) {
     if (!camera_ready_) {
         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 3000,
@@ -168,39 +237,81 @@ void visualOdometry::imageHandler(const sensor_msgs::msg::Image::SharedPtr msg) 
         return;
     }
 
-    cv_bridge::CvImageConstPtr cv_ptr;
+    cv::Mat gray;
     try {
         if (msg->encoding == sensor_msgs::image_encodings::MONO8) {
-            cv_ptr = cv_bridge::toCvShare(msg, sensor_msgs::image_encodings::MONO8);
+            const auto cv_ptr = cv_bridge::toCvShare(msg, sensor_msgs::image_encodings::MONO8);
+            gray = cv_ptr->image;
         } else {
-            cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::MONO8);
+            const auto cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::MONO8);
+            gray = cv_ptr->image;
         }
     } catch (const cv_bridge::Exception &e) {
-        RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-                              "visual_odometry_node cv_bridge conversion failed: %s", e.what());
-        return;
+        // Fallback for malformed image metadata (seen in some bags):
+        // infer channels from step and convert manually.
+        if (msg->height == 0 || msg->width == 0 || msg->step == 0 || msg->data.empty()) {
+            RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                                  "visual_odometry_node cv_bridge conversion failed: %s", e.what());
+            return;
+        }
+
+        const int inferred_channels = std::max(1, static_cast<int>(msg->step / msg->width));
+        if (inferred_channels == 1 &&
+            msg->data.size() >= static_cast<size_t>(msg->height) * static_cast<size_t>(msg->step)) {
+            cv::Mat raw(msg->height, msg->width, CV_8UC1,
+                        const_cast<unsigned char *>(msg->data.data()), msg->step);
+            gray = raw.clone();
+        } else if (inferred_channels >= 3 &&
+                   msg->data.size() >= static_cast<size_t>(msg->height) * static_cast<size_t>(msg->step)) {
+            cv::Mat raw(msg->height, msg->width, CV_8UC3,
+                        const_cast<unsigned char *>(msg->data.data()), msg->step);
+            std::string encoding = msg->encoding;
+            std::transform(encoding.begin(), encoding.end(), encoding.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (encoding.find("rgb") != std::string::npos) {
+                cv::cvtColor(raw, gray, cv::COLOR_RGB2GRAY);
+            } else {
+                cv::cvtColor(raw, gray, cv::COLOR_BGR2GRAY);
+            }
+        } else {
+            RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                                  "visual_odometry_node image decode fallback failed (encoding=%s, step=%u, width=%u)",
+                                  msg->encoding.c_str(), msg->step, msg->width);
+            return;
+        }
     }
 
-    const cv::Mat gray = cv_ptr->image;
     if (gray.empty()) {
         return;
     }
 
     const rclcpp::Time stamp = msg->header.stamp;
+    int detected_features = 0;
+    int tracked_features = 0;
+    int inlier_features = 0;
+    bool tracking_ok = false;
+    std::vector<cv::Point2f> overlay_points;
 
     if (!initialized_) {
         resetTracking(gray, stamp);
+        detected_features = static_cast<int>(prev_points_.size());
+        overlay_points = prev_points_;
         publishOdometry(stamp);
+        publishDebugOutputs(stamp, gray, detected_features, tracked_features, inlier_features, tracking_ok, overlay_points);
         return;
     }
 
     if (prev_points_.size() < static_cast<size_t>(min_tracked_features_)) {
         detectFeatures(prev_gray_, prev_points_);
     }
+    detected_features = static_cast<int>(prev_points_.size());
 
     if (prev_points_.size() < 5) {
         resetTracking(gray, stamp);
+        detected_features = static_cast<int>(prev_points_.size());
+        overlay_points = prev_points_;
         publishOdometry(stamp);
+        publishDebugOutputs(stamp, gray, detected_features, tracked_features, inlier_features, tracking_ok, overlay_points);
         return;
     }
 
@@ -225,17 +336,24 @@ void visualOdometry::imageHandler(const sensor_msgs::msg::Image::SharedPtr msg) 
         matched_prev.push_back(prev_points_[i]);
         matched_curr.push_back(tracked_curr[i]);
     }
+    tracked_features = static_cast<int>(matched_curr.size());
+    overlay_points = matched_curr;
 
     if (matched_prev.size() < 8) {
         lost_frames_++;
         if (lost_frames_ >= max_lost_frames_) {
             resetTracking(gray, stamp);
+            detected_features = static_cast<int>(prev_points_.size());
+            overlay_points = prev_points_;
             publishOdometry(stamp);
+            publishDebugOutputs(
+                stamp, gray, detected_features, tracked_features, inlier_features, tracking_ok, overlay_points);
             return;
         }
         prev_gray_ = gray.clone();
         prev_points_ = matched_curr;
         publishOdometry(stamp);
+        publishDebugOutputs(stamp, gray, detected_features, tracked_features, inlier_features, tracking_ok, overlay_points);
         return;
     }
 
@@ -247,27 +365,34 @@ void visualOdometry::imageHandler(const sensor_msgs::msg::Image::SharedPtr msg) 
         lost_frames_++;
         if (lost_frames_ >= max_lost_frames_) {
             resetTracking(gray, stamp);
+            detected_features = static_cast<int>(prev_points_.size());
+            overlay_points = prev_points_;
         } else {
             prev_gray_ = gray.clone();
             prev_points_ = matched_curr;
         }
         publishOdometry(stamp);
+        publishDebugOutputs(stamp, gray, detected_features, tracked_features, inlier_features, tracking_ok, overlay_points);
         return;
     }
 
     cv::Mat R;
     cv::Mat t;
     const int inliers = cv::recoverPose(essential, matched_prev, matched_curr, K_, R, t, inlier_mask);
+    inlier_features = inliers;
 
     if (inliers < min_inliers_) {
         lost_frames_++;
         if (lost_frames_ >= max_lost_frames_) {
             resetTracking(gray, stamp);
+            detected_features = static_cast<int>(prev_points_.size());
+            overlay_points = prev_points_;
         } else {
             prev_gray_ = gray.clone();
             prev_points_ = matched_curr;
         }
         publishOdometry(stamp);
+        publishDebugOutputs(stamp, gray, detected_features, tracked_features, inlier_features, tracking_ok, overlay_points);
         return;
     }
 
@@ -297,13 +422,16 @@ void visualOdometry::imageHandler(const sensor_msgs::msg::Image::SharedPtr msg) 
     if (inlier_curr_points.size() < static_cast<size_t>(min_tracked_features_)) {
         detectFeatures(gray, inlier_curr_points);
     }
+    overlay_points = inlier_curr_points;
 
     prev_gray_ = gray.clone();
     prev_points_ = inlier_curr_points;
     prev_stamp_ = stamp;
     lost_frames_ = 0;
+    tracking_ok = true;
 
     publishOdometry(stamp);
+    publishDebugOutputs(stamp, gray, detected_features, tracked_features, inlier_features, tracking_ok, overlay_points);
 }
 
 } // namespace super_odometry

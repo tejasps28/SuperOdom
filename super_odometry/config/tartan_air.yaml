@@ -28,6 +28,10 @@
         max_range: 130.0
         filter_point_size: 2
         mapping_skip_frame: 1
+        provide_point_time: 0
+        # Toggle visual deskew usage inside feature extraction.
+        # false = IMU-only deskew path.
+        use_visual_deskew: false
 
     # Laser Mapping Params
     laser_mapping_node:
@@ -35,6 +39,9 @@
         mapping_plane_resolution: 0.2
         max_iterations: 5
         max_surface_features: 2000
+        # Master toggle for VIO prediction usage in fusion.
+        # false = VIO path disabled, LIO/IMU fallback only.
+        enable_visual_fusion: false
         localization_mode: false
         read_pose_file: false
         init_x: 0.0
@@ -67,3 +74,7 @@
         ransac_threshold_px: 1.5
         # monocular VO scale factor; set from your dataset scale policy
         translation_scale: 0.0
+        # ORB-style runtime observability for VO.
+        publish_debug_topics: true
+        publish_debug_image: true
+        debug_image_topic: "/SuperOdom/vo_debug_image"
