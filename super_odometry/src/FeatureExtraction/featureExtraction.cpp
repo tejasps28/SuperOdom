@@ -668,9 +668,10 @@ void featureExtraction::removePointDistortion(
           
             if (LASER_IMU_SYNC_SCCUESS == true and visual_sync_available == true)
             {
-                RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "\033[1;32m----> Both IMU ,VIO laserscan are synchronized!.\033[0m");
-                removePointDistortion<nav_msgs::msg::Odometry::SharedPtr>(lidar_start_time, lidar_end_time, visualOdomBuf, lidar_msg);
-             
+                RCLCPP_INFO_THROTTLE(
+                    this->get_logger(), *this->get_clock(), 2000,
+                    "\033[1;32m----> Both IMU and VIO are synchronized; preferring IMU deskew and keeping VIO for fusion only.\033[0m");
+                removePointDistortion<Imu::Ptr>(lidar_start_time, lidar_end_time, imuBuf, lidar_msg);
             }
 
             if (LASER_IMU_SYNC_SCCUESS == false and visual_sync_available == true)

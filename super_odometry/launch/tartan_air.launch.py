@@ -69,7 +69,7 @@ def generate_launch_description():
     )
     use_vio_when_not_degenerate_arg = DeclareLaunchArgument(
         "use_vio_when_not_degenerate",
-        default_value="true",
+        default_value="false",
         description="Allow VIO prediction when mapping is not degenerate",
     )
 

@@ -47,7 +47,7 @@
         # false = VIO path disabled, LIO/IMU fallback only.
         enable_visual_fusion: false
         # Allow VIO prediction fallback even when mapping is not in degenerate mode.
-        use_vio_when_not_degenerate: true
+        use_vio_when_not_degenerate: false
         # Time-window slack for odom interpolation/gating in fusion.
         odom_interp_slack_sec: 0.2
         localization_mode: false
