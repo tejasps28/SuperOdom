@@ -52,8 +52,10 @@ namespace super_odometry {
         bool publish_only_feature_points;
         bool use_imu_roll_pitch;
         bool enable_visual_fusion;
+        bool use_vio_when_not_degenerate;
         int max_surface_features;
         double velocity_failure_threshold;
+        double odom_interp_slack_sec;
         bool auto_voxel_size;
         bool forget_far_chunks;
         float visual_confidence_factor;
@@ -115,11 +117,7 @@ namespace super_odometry {
 
         void laserCloudRawDataHandler(const sensor_msgs::msg::PointCloud2::SharedPtr laserCloudRawdata);
 
-        void imuOdometryHandler(const nav_msgs::msg::Odometry::SharedPtr msgIn);
-
         void visualOdometryHandler(const nav_msgs::msg::Odometry::SharedPtr msgIn);
-
-        void extractIMUOdometry(double timeLaserFrame, Transformd &T_w_lidar);
 
         bool extractVisualIMUOdometryAndCheck(Transformd &T_w_lidar);
 
@@ -190,7 +188,6 @@ namespace super_odometry {
         // Subscribers
         rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr subLaserCloudCornerLast;
         rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr subLaserCloudSurfLast;
-        rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr subIMUOdometry;
         rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr subVisualOdometry;
         rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr subLaserCloudFullRes;
         rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr subLaserRawdata;
@@ -219,12 +216,12 @@ namespace super_odometry {
         rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubLIOPrediction;
         rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr pubVIOPredictionStatus;
         rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr pubLIOPredictionStatus;
+        rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pubVIORejectReason;
 
         rclcpp::TimerBase::SharedPtr process_timer_;
 
         rclcpp::CallbackGroup::SharedPtr cb_group_;
 
-        MapRingBuffer<nav_msgs::msg::Odometry::SharedPtr> imu_odom_buf;
         MapRingBuffer<nav_msgs::msg::Odometry::SharedPtr> visual_odom_buf;
 
         int frameCount = 0;
@@ -252,6 +249,7 @@ namespace super_odometry {
         bool imuorientationAvailable = false;
         bool lastimuodomAvaliable=false;
         bool imu_initialized = false;
+        std::string last_vio_reject_reason_ = "not_checked";
 
 
         pcl::VoxelGrid<PointType> downSizeFilterCorner;
@@ -315,7 +313,6 @@ namespace super_odometry {
         laser_mapping_config config_;
         nav_msgs::msg::Path laserAfterMappedPath;
         std::mutex mBuf;
-        rclcpp::Time timeLatestImuOdometry;
         rclcpp::Time timeLastMappingResult;
         PointType pointOri, pointSel;
            

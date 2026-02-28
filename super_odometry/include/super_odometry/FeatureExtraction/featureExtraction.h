@@ -64,6 +64,7 @@ namespace super_odometry {
         int skipFrame;
         int N_SCANS;
         int provide_point_time;
+        double sync_tolerance_sec;
         bool use_dynamic_mask;
         bool use_imu_roll_pitch;
         bool use_visual_deskew;

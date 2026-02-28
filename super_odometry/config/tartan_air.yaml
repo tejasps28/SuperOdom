@@ -4,8 +4,9 @@
     imu_topic: "/tartanair/imu"
     laser_topic: "/tartanair/velodyne"
     odom_topic: "/tartanair/visual_odometry"
+    PROJECT_NAME: "/SuperOdom"
     sensor: "velodyne"
-    use_imu_roll_pitch: false
+    use_imu_roll_pitch: true
 
     world_frame: "map"
     world_frame_rot: "map_rot"
@@ -26,9 +27,11 @@
         scan_line: 16
         min_range: 0.2
         max_range: 130.0
-        filter_point_size: 2
+        filter_point_size: 10
         mapping_skip_frame: 1
-        provide_point_time: 0
+        # Stable copy omitted this field; code default is 1.
+        provide_point_time: 1
+        sync_tolerance_sec: 0.2
         # Toggle visual deskew usage inside feature extraction.
         # false = IMU-only deskew path.
         use_visual_deskew: false
@@ -36,12 +39,17 @@
     # Laser Mapping Params
     laser_mapping_node:
         mapping_line_resolution: 0.1
-        mapping_plane_resolution: 0.2
-        max_iterations: 5
-        max_surface_features: 2000
+        mapping_plane_resolution: 0.4
+        max_iterations: 18
+        max_surface_features: 1900
+        auto_voxel_size: false
         # Master toggle for VIO prediction usage in fusion.
         # false = VIO path disabled, LIO/IMU fallback only.
         enable_visual_fusion: false
+        # Allow VIO prediction fallback even when mapping is not in degenerate mode.
+        use_vio_when_not_degenerate: true
+        # Time-window slack for odom interpolation/gating in fusion.
+        odom_interp_slack_sec: 0.2
         localization_mode: false
         read_pose_file: false
         init_x: 0.0
@@ -53,7 +61,7 @@
 
     # IMU Preintegration Params
     imu_preintegration_node:
-        lidar_correction_noise: 0.01
+        lidar_correction_noise: 0.005
         acc_n: 3.9939570888238808e-03
         gyr_n: 1.5636343949698187e-03
         acc_w: 6.4356659353532566e-05

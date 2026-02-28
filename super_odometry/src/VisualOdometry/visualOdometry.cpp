@@ -51,8 +51,12 @@ void visualOdometry::initInterface() {
     image_qos.best_effort();
     image_qos.keep_last(10);
 
+    rclcpp::QoS camera_info_qos(10);
+    camera_info_qos.best_effort();
+    camera_info_qos.keep_last(10);
+
     sub_camera_info_ = this->create_subscription<sensor_msgs::msg::CameraInfo>(
-        camera_info_topic_, 10,
+        camera_info_topic_, camera_info_qos,
         std::bind(&visualOdometry::cameraInfoHandler, this, std::placeholders::_1), sub_options);
 
     sub_image_ = this->create_subscription<sensor_msgs::msg::Image>(
@@ -77,6 +81,12 @@ void visualOdometry::initInterface() {
     RCLCPP_INFO(this->get_logger(), "Visual odometry camera info topic: %s", camera_info_topic_.c_str());
     RCLCPP_INFO(this->get_logger(), "Visual odometry output topic: %s", odom_topic_.c_str());
     RCLCPP_INFO(this->get_logger(), "Visual odometry debug topics enabled: %d", publish_debug_topics_);
+    if (publish_debug_topics_) {
+        RCLCPP_INFO(this->get_logger(), "VO debug topic: %s", (ProjectName + "/vo_detected_features").c_str());
+        RCLCPP_INFO(this->get_logger(), "VO debug topic: %s", (ProjectName + "/vo_tracked_features").c_str());
+        RCLCPP_INFO(this->get_logger(), "VO debug topic: %s", (ProjectName + "/vo_inlier_features").c_str());
+        RCLCPP_INFO(this->get_logger(), "VO debug topic: %s", (ProjectName + "/vo_tracking_ok").c_str());
+    }
     if (publish_debug_topics_ && publish_debug_image_) {
         RCLCPP_INFO(this->get_logger(), "Visual odometry debug image topic: %s", debug_image_topic_.c_str());
     }
@@ -234,6 +244,19 @@ void visualOdometry::imageHandler(const sensor_msgs::msg::Image::SharedPtr msg) 
         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 3000,
                              "visual_odometry_node waiting for camera_info on %s",
                              camera_info_topic_.c_str());
+        cv::Mat preview_gray;
+        try {
+            if (msg->encoding == sensor_msgs::image_encodings::MONO8) {
+                const auto cv_ptr = cv_bridge::toCvShare(msg, sensor_msgs::image_encodings::MONO8);
+                preview_gray = cv_ptr->image;
+            } else {
+                const auto cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::MONO8);
+                preview_gray = cv_ptr->image;
+            }
+        } catch (const cv_bridge::Exception &) {
+            preview_gray = cv::Mat();
+        }
+        publishDebugOutputs(msg->header.stamp, preview_gray, 0, 0, 0, false, {});
         return;
     }
 

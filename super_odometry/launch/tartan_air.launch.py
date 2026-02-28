@@ -57,6 +57,21 @@ def generate_launch_description():
         default_value="false",
         description="Enable visual deskew path in feature_extraction_node",
     )
+    sync_tolerance_sec_arg = DeclareLaunchArgument(
+        "sync_tolerance_sec",
+        default_value="0.2",
+        description="LiDAR-IMU/VO synchronization tolerance in feature extraction",
+    )
+    odom_interp_slack_sec_arg = DeclareLaunchArgument(
+        "odom_interp_slack_sec",
+        default_value="0.2",
+        description="Allowed timestamp slack for odom interpolation in laser mapping",
+    )
+    use_vio_when_not_degenerate_arg = DeclareLaunchArgument(
+        "use_vio_when_not_degenerate",
+        default_value="true",
+        description="Allow VIO prediction when mapping is not degenerate",
+    )
 
     feature_extraction_node = Node(
         package="super_odometry",
@@ -67,6 +82,7 @@ def generate_launch_description():
             {
                 "calibration_file": LaunchConfiguration("calibration_file"),
                 "feature_extraction_node.use_visual_deskew": LaunchConfiguration("enable_visual_deskew"),
+                "feature_extraction_node.sync_tolerance_sec": LaunchConfiguration("sync_tolerance_sec"),
             },
         ],
     )
@@ -81,6 +97,8 @@ def generate_launch_description():
                 "calibration_file": LaunchConfiguration("calibration_file"),
                 "map_dir": os.path.join(home_directory, "/path/to/your/pcd"),
                 "laser_mapping_node.enable_visual_fusion": LaunchConfiguration("enable_visual_fusion"),
+                "laser_mapping_node.odom_interp_slack_sec": LaunchConfiguration("odom_interp_slack_sec"),
+                "laser_mapping_node.use_vio_when_not_degenerate": LaunchConfiguration("use_vio_when_not_degenerate"),
             },
         ],
     )
@@ -122,6 +140,9 @@ def generate_launch_description():
             enable_visual_odometry_arg,
             enable_visual_fusion_arg,
             enable_visual_deskew_arg,
+            sync_tolerance_sec_arg,
+            odom_interp_slack_sec_arg,
+            use_vio_when_not_degenerate_arg,
             feature_extraction_node,
             laser_mapping_node,
             imu_preintegration_node,

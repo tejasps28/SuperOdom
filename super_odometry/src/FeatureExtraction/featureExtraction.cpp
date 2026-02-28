@@ -82,10 +82,14 @@ namespace super_odometry {
             std::bind(&featureExtraction::imu_Handler, this,
                         std::placeholders::_1), sub_options);
 
-        subOdom = this->create_subscription<nav_msgs::msg::Odometry>(
-            ODOM_TOPIC, 10, 
-            std::bind(&featureExtraction::visual_odom_Handler, this,
-                        std::placeholders::_1), sub_options);
+        if (config_.use_visual_deskew) {
+            subOdom = this->create_subscription<nav_msgs::msg::Odometry>(
+                ODOM_TOPIC, 10,
+                std::bind(&featureExtraction::visual_odom_Handler, this,
+                          std::placeholders::_1), sub_options);
+        } else {
+            RCLCPP_INFO(this->get_logger(), "FeatureExtraction visual odom subscription disabled");
+        }
 
         pubLaserCloud = this->create_publisher<sensor_msgs::msg::PointCloud2>(
             ProjectName+"/velodyne_cloud_2", 2);
@@ -131,6 +135,7 @@ namespace super_odometry {
         this->declare_parameter<float>("feature_extraction_node.max_range", 130.0);
         this->declare_parameter<int>("feature_extraction_node.filter_point_size", 3);
         this->declare_parameter<int>("feature_extraction_node.provide_point_time", 1);
+        this->declare_parameter<double>("feature_extraction_node.sync_tolerance_sec", 0.05);
         this->declare_parameter<bool>("feature_extraction_node.debug_view", false);
         this->declare_parameter<bool>("feature_extraction_node.use_visual_deskew", true);
         this->declare_parameter<double>("feature_extraction_node.imu_acc_x_limit", 1.0);
@@ -150,6 +155,7 @@ namespace super_odometry {
         config_.max_range = this->get_parameter("feature_extraction_node.max_range").as_double();
         config_.filter_point_size = this->get_parameter("feature_extraction_node.filter_point_size").as_int();
         config_.provide_point_time = this->get_parameter("feature_extraction_node.provide_point_time").as_int();
+        config_.sync_tolerance_sec = this->get_parameter("feature_extraction_node.sync_tolerance_sec").as_double();
         config_.use_dynamic_mask = this->get_parameter("feature_extraction_node.use_dynamic_mask").as_bool(); 
         config_.debug_view_enabled = this->get_parameter("feature_extraction_node.debug_view").as_bool();
         config_.use_visual_deskew = this->get_parameter("feature_extraction_node.use_visual_deskew").as_bool();
@@ -196,7 +202,7 @@ namespace super_odometry {
         measureBuf.getLastTime(meas_end_time);
 
         
-        const double sync_tolearance =0.05;
+        const double sync_tolearance = config_.sync_tolerance_sec;
 
         const double time_difference=meas_start_time-lidar_start_time;
 
@@ -644,14 +650,11 @@ void featureExtraction::removePointDistortion(
     void featureExtraction::undistortionAndFeatureExtraction()      
     {
         LASER_IMU_SYNC_SCCUESS = synchronize_measurements<Imu::Ptr>(imuBuf, lidarBuf);
-        LASER_CAMERA_SYNC_SUCCESS = synchronize_measurements<nav_msgs::msg::Odometry::SharedPtr>(visualOdomBuf, lidarBuf);
-        const bool visual_sync_available = config_.use_visual_deskew && LASER_CAMERA_SYNC_SUCCESS;
-
-        if (LASER_CAMERA_SYNC_SUCCESS && !config_.use_visual_deskew) {
-            RCLCPP_INFO_THROTTLE(
-                this->get_logger(), *this->get_clock(), 3000,
-                "Visual deskew disabled (`feature_extraction_node.use_visual_deskew=false`); using IMU-only deskew path.");
-        }
+        LASER_CAMERA_SYNC_SUCCESS = false;
+        const bool visual_sync_available =
+            config_.use_visual_deskew &&
+            synchronize_measurements<nav_msgs::msg::Odometry::SharedPtr>(visualOdomBuf, lidarBuf);
+        LASER_CAMERA_SYNC_SUCCESS = visual_sync_available;
 
         if ((LASER_IMU_SYNC_SCCUESS == true or visual_sync_available == true) and lidarBuf.getSize() > 0)
         {
